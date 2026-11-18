@@ -172,6 +172,11 @@ summary{font-weight:700;padding:10px 0;cursor:pointer;min-height:44px}
   <div id="aiExtra"></div>
   <div id="priceEd"></div>
   <button class="btn w" id="savePrices" style="margin-top:12px">שמור מחירון לשבוע הזה</button>
+  <details id="aiBox"><summary>קריאה חכמה של המחירון (Gemini) <span id="aiState" class="tag a">כבויה</span></summary>
+    <div class="muted">עם מפתח Gemini המחירון נקרא בדיוק גבוה, נבדק מול זיהוי הטקסט, ונשמר אוטומטית כששתי השיטות מסכימות. המפתח נשמר רק בשרת שלכם.</div>
+    <div class="bar"><input class="in" id="aiKey" type="password" autocomplete="off" placeholder="מדביקים כאן את המפתח (מתחיל ב-AIza…)"><button class="btn sec" id="aiSave" style="flex:0 0 auto">שמירה ובדיקה</button></div>
+    <div id="aiMsg"></div>
+  </details>
   <details id="filesBox"><summary>ארכיון קבצי מחירון</summary><div id="filesList" class="list"></div></details>
   <details id="prodBox"><summary>מוצרים, יחידות וסוג מחיר</summary>
     <div class="muted">"שבועי" נלקח מהמחירון. "קבוע" נלקח מהמחיר הקבוע. "בקבלה" העובד מקליד בזמן הקבלה.</div>
@@ -284,7 +289,7 @@ const isNet=e=>typeof e==='string'&&(e.startsWith(NET1)||e.startsWith(NET2));
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const nowHM=()=>{const d=new Date();return pad(d.getHours())+':'+pad(d.getMinutes())};
 function applyBoot(d,fromCache){S.role=d.role;S.today=fromCache?iso(new Date()):d.today;S.sheetUrl=d.sheetUrl;setProducts(d.products);S.sups=d.suppliers;S.lists=d.lists;
-  S.months={...(fromCache?{}:S.months),[d.today.slice(0,7)]:d.receipts};S.orders=d.orders||[];S.phones=d.phones||{};S.biz=d.biz||'';applyPending();
+  S.months={...(fromCache?{}:S.months),[d.today.slice(0,7)]:d.receipts};S.orders=d.orders||[];S.phones=d.phones||{};S.biz=d.biz||'';S.hasAI=!!d.hasAI;applyPending();
   if(!S.sumMonth){S.sumMonth=S.logMonth=S.today.slice(0,7);S.wk=weekOf(S.today);$('#logMonth').value=$('#sumMonth').value=S.sumMonth;$('#wk').value=S.wk}
   $('#sheetLink').href=S.sheetUrl||'#';if(S.sup&&!S.sups.includes(S.sup))S.sup='';
   document.querySelectorAll('nav .mg').forEach(a=>a.style.display=S.role==='manager'?'':'none');document.querySelectorAll('nav .ch').forEach(a=>a.style.display=canOrder()?'':'none');
@@ -292,14 +297,14 @@ function applyBoot(d,fromCache){S.role=d.role;S.today=fromCache?iso(new Date()):
   $('#nav').style.display='';$('#logout').style.display='';
   $('#hdate').textContent=dt(S.today).toLocaleDateString('he-IL',{weekday:'long',day:'numeric',month:'numeric'})}
 let persistT;function persist(){clearTimeout(persistT);persistT=setTimeout(()=>{if(!S.role)return;const m=S.today.slice(0,7);
-  ls.set('boot',JSON.stringify({pin:S.pin,d:{role:S.role,today:S.today,sheetUrl:S.sheetUrl,products:Object.values(S.products),suppliers:S.sups,phones:S.phones,biz:S.biz,lists:S.lists,orders:S.orders.map(o=>{const {_p,...x}=o;return x}),receipts:(S.months[m]||[]).filter(i=>!i._p)}}))},400)}
+  ls.set('boot',JSON.stringify({pin:S.pin,d:{role:S.role,today:S.today,sheetUrl:S.sheetUrl,products:Object.values(S.products),suppliers:S.sups,phones:S.phones,biz:S.biz,lists:S.lists,orders:S.orders.map(o=>{const {_p,...x}=o;return x}),hasAI:S.hasAI,receipts:(S.months[m]||[]).filter(i=>!i._p)}}))},400)}
 async function login(silent){const pin=$('#pin').value.trim(),who=$('#who').value.trim();
   if(!pin){if(!silent)$('#loginErr').innerHTML='<div class="err">נא להקליד קוד</div>';return}
   let cached=null;try{const c=JSON.parse(ls.get('boot')||'null');if(c&&c.pin===pin)cached=c.d}catch(e){}
-  if(cached&&!S.role){S.pin=pin;applyBoot(cached,true);show(S.role==='chef'?'orders':'receive');flush()}
+  if(cached&&!S.role){S.pin=pin;applyBoot(cached,true);show(S.role==='chef'?'orders':'receive');flush();takeShared()}
   if(!cached){$('#loginBtn').disabled=true;$('#loginBtn').textContent='מתחבר…';$('#loginErr').innerHTML='';status(silent?'<div class="note">טוען…</div>':'')}
   try{const d=JSON.parse(await api('boot',pin));S.pin=pin;S.who=who||S.who;ls.set('pin',pin);ls.set('who',S.who);
-    const first=!S.role;applyBoot(d,false);persist();status('');if(first)show(S.role==='chef'?'orders':'receive');else render();flush()}
+    const first=!S.role;applyBoot(d,false);persist();status('');if(first)show(S.role==='chef'?'orders':'receive');else render();flush();takeShared()}
   catch(e){if(isNet(e)&&S.role){status('');return}
     S.role=null;ls.del('boot');$('#nav').style.display='none';$('#logout').style.display='none';status('');show('login');$('#loginErr').innerHTML='<div class="err">'+esc(e)+'</div>'}finally{$('#loginBtn').disabled=false;$('#loginBtn').textContent='כניסה'}}
 $('#loginBtn').onclick=()=>login(false);$('#pin').onkeydown=e=>{if(e.key==='Enter')login(false)};
@@ -448,23 +453,40 @@ $('#excList').onchange=e=>{const c=e.target.closest('[data-h]');if(!c)return;con
 async function ensureWeek(w){if(!S.lists[w]){try{const x=JSON.parse(await api('getWeek',S.pin,w));if(Object.keys(x).length)S.lists[w]=x}catch(er){}}}
 $('#wk').onchange=async e=>{S.wk=weekOf(e.target.value||S.today);S.upl=null;S.extra=[];$('#aiExtra').innerHTML='';$('#readMsg').innerHTML='';await ensureWeek(S.wk);renderPrices()};
 function wkProds(){return prodList().filter(p=>p.type==='weekly').sort((a,b)=>a.name.localeCompare(b.name,'he'))}
-function renderPrices(){const w=S.wk;if(!w)return;$('#wkLbl').textContent='ראשון '+heD(w)+' – שבת '+heD(addDays(w,6))+(S.lists[w]?' · יש מחירון שמור':' · אין עדיין מחירון');
+function renderPrices(){const w=S.wk;if(!w)return;drawAi();$('#wkLbl').textContent='ראשון '+heD(w)+' – שבת '+heD(addDays(w,6))+(S.lists[w]?' · יש מחירון שמור':' · אין עדיין מחירון');
   if(S.draftWk!==w){S.draft={};S.draftWk=w}const l=S.lists[w]||{};
-  $('#priceEd').innerHTML='<h2>מחירים לשבוע</h2>'+wkProds().map(p=>{const v=S.draft[p.id]??l[p.id]??'';const from=S.upl&&S.upl.prices[p.id]!=null;
-    return `<div class="pr"><span>${esc(p.name)} <span class="muted">/ ${esc(p.unit)}</span>${from?' <span class="tag g">מהקובץ</span>':''}</span><input class="in" inputmode="decimal" data-pp="${p.id}" value="${esc(v)}" placeholder="—"></div>`}).join('');
+  $('#priceEd').innerHTML='<h2>מחירים לשבוע</h2>'+wkProds().map(p=>{const v=S.draft[p.id]??l[p.id]??'';const fl=S.upl&&S.upl.flags?S.upl.flags[p.id]:(S.upl&&S.upl.prices[p.id]!=null?'ocr':null);const c=fl==='conflict'&&(S.upl.conflicts||[]).find(x=>x.id===p.id);
+    const tag=fl==='ok'?' <span class="tag g">✓ אומת</span>':fl==='conflict'?` <span class="tag r">לבדוק: ${c.ai} או ${c.ocr}</span>`:fl==='ai'?' <span class="tag g">קריאה חכמה</span>':fl==='ocr'?' <span class="tag a">זיהוי טקסט</span>':'';
+    return `<div class="pr"><span>${esc(p.name)} <span class="muted">/ ${esc(p.unit)}</span>${tag}</span><input class="in" inputmode="decimal" data-pp="${p.id}" value="${esc(v)}" placeholder="—"></div>`}).join('');
   renderProds();renderSups()}
 $('#priceEd').oninput=e=>{const i=e.target.closest('[data-pp]');if(i)S.draft[i.dataset.pp]=i.value};
 function toB64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.onerror=()=>rej('הקובץ לא נקרא');r.readAsDataURL(file)})}
-$('#file').onchange=async e=>{const f=e.target.files[0];if(!f)return;$('#readMsg').innerHTML='<div class="note">מעלה ושומר בארכיון, וקורא את המחירים… (עד חצי דקה)</div>';$('#file').disabled=true;
+async function handlePriceFile(f){if(!f)return;show('prices');
+  $('#readMsg').innerHTML='<div class="note">⏳ מעלה, שומר בארכיון וקורא את המחירים… (בדרך כלל 10–30 שניות)</div>';$('#file').disabled=true;
   try{let b64,mime=f.type||'application/pdf',name=f.name||'מחירון';
     if(mime.startsWith('image/')){const s=await shrink(f,2400);b64=s.b64;mime='image/jpeg';if(!/\.jpe?g$/i.test(name))name+='.jpg'}else b64=await toB64(f);
     const r=JSON.parse(await api('uploadPriceFile',S.pin,b64,mime,name));
     if(r.date&&/^\d{4}-\d{2}-\d{2}$/.test(r.date)){S.wk=weekOf(r.date);$('#wk').value=r.date;await ensureWeek(S.wk)}
+    const n=Object.keys(r.prices||{}).length,tot=r.total||wkProds().length,link=`<a href="${esc(r.url)}" target="_blank" rel="noopener">הקובץ</a>`;
+    const tech=x=>x?'<br><span class="muted" style="font-size:12px">פרטים טכניים: '+esc(String(x).slice(0,180))+'</span>':'';
+    if(r.saved){S.lists[r.week]=r.prices;S.upl=null;S.extra=[];S.draft={};S.draftWk=null;renderPrices();renderExtra();
+      for(const m of Object.keys(S.months))loadMonth(m,true);
+      $('#readMsg').innerHTML=`<div class="note" style="background:var(--g2)">✅ <b>המחירון נשמר אוטומטית</b> לשבוע ${heD(r.week)}: ${n} מחירים, וכולם זוהו זהה בשתי שיטות קריאה.${r.fixed?` עודכנו גם ${r.fixed} קבלות שחיכו למחיר.`:''} ${link} בארכיון. אם צריך לתקן משהו – משנים למטה ולוחצים "שמור".</div>`;
+      if($('#filesBox').open)loadFiles();return}
     S.draftWk=S.wk;S.draft={};for(const [k,v] of Object.entries(r.prices||{}))S.draft[k]=v;S.upl=r;S.extra=r.extra||[];renderPrices();renderExtra();
-    const n=Object.keys(r.prices||{}).length,tot=wkProds().length;
-    $('#readMsg').innerHTML=`<div class="note">הקובץ נשמר בארכיון (<a href="${esc(r.url)}" target="_blank" rel="noopener">פתיחה</a>). ${r.ocrErr||r.how==='none'?'לא הצלחתי לקרוא את טבלת המחירים מהקובץ – אפשר למלא ידנית מול הקובץ.'+(r.ocrErr?'<br><span class="muted" style="font-size:12px">פרטים טכניים: '+esc(String(r.ocrErr).slice(0,160))+'</span>':''):r.how==='mismatch'?`בטבלה זוהו ${r.names} שמות ו-${r.count} מחירים, והם לא תואמים, אז לא מילאתי אוטומטית. יש למלא ידנית מול הקובץ.`:`מולאו ${n} מתוך ${tot} מוצרים${r.how==='order'?' לפי סדר הרשימה – כדאי לבדוק':''}${S.extra.length?`, ו-${S.extra.length} מוצרים חדשים מופיעים למעלה`:''}${r.date?' · תאריך המחירון '+heD(r.date):''}. בודקים ולוחצים "שמור".`}</div>`;
+    const cf=(r.conflicts||[]).length;
+    let msg;
+    if(!n&&!S.extra.length)msg='לא הצלחתי לקרוא את טבלת המחירים מהקובץ – אפשר למלא ידנית מול '+link+'.'+tech(r.aiErr||r.ocrErr);
+    else msg=`מולאו ${n} מתוך ${tot} מוצרים${r.date?' · תאריך המחירון '+heD(r.date):''}.`
+      +(cf?` <b style="color:var(--red)">${cf} מחירים מסומנים "לבדוק"</b> – שתי שיטות הקריאה לא הסכימו, כדאי להשוות מול ${link}.`:'')
+      +(S.extra.length?` ${S.extra.length} מוצרים חדשים מופיעים למעלה.`:'')
+      +(r.source==='ocr'?' (נקרא בזיהוי טקסט בלבד – כדאי לבדוק. הפעלת קריאה חכמה מגדילה את הדיוק.)':'')
+      +' בודקים ולוחצים "שמור".'+tech(r.aiErr);
+    $('#readMsg').innerHTML=`<div class="note">${msg}</div>`;
+    if(cf)setTimeout(()=>{const x=document.querySelector('#priceEd .tag.r');if(x)x.scrollIntoView({behavior:'smooth',block:'center'})},200);
     if($('#filesBox').open)loadFiles()}
-  catch(er){$('#readMsg').innerHTML='<div class="err">ההעלאה נכשלה: '+esc(er)+'</div>'}finally{$('#file').disabled=false;e.target.value=''}};
+  catch(er){$('#readMsg').innerHTML='<div class="err">ההעלאה נכשלה: '+esc(er)+'</div>'}finally{$('#file').disabled=false;$('#file').value=''}}
+$('#file').onchange=e=>handlePriceFile(e.target.files[0]);
 function renderExtra(){const ex=S.extra||[];if(!ex.length){$('#aiExtra').innerHTML='';return}
   const opts=prodList().sort((a,b)=>a.name.localeCompare(b.name,'he')).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
   $('#aiExtra').innerHTML='<h2>מוצרים חדשים במחירון</h2><div class="muted">הופיעו בטבלה ולא קיימים במערכת. אפשר לתקן את השם, ואז ליצור מוצר חדש, לשייך למוצר קיים או לדלג.</div>'+ex.map((x,i)=>`<div class="pr ai" data-ar="${i}"><input class="in" data-an value="${esc(x.name)}" aria-label="שם המוצר"><input class="in" inputmode="decimal" data-ap value="${x.price}"><select class="in"><option value="new">➕ מוצר חדש</option><option value="skip">דלג</option>${opts}</select></div>`).join('')}
@@ -479,6 +501,12 @@ $('#savePrices').onclick=async()=>{const w=S.wk,prices={},l=S.lists[w]||{};$('#s
     renderPrices();toast('המחירון נשמר'+(fixed?` · עודכנו ${fixed} קבלות בלי מחיר`:''))}
   catch(e){toast('השמירה נכשלה: '+e)}finally{$('#savePrices').disabled=false}};
 $('#filesBox').ontoggle=()=>{if($('#filesBox').open)loadFiles()};
+function drawAi(){const on=!!S.hasAI;$('#aiState').textContent=on?'פעילה':'כבויה';$('#aiState').className='tag '+(on?'g':'a')}
+$('#aiSave').onclick=async()=>{const k=$('#aiKey').value.trim();$('#aiSave').disabled=true;$('#aiMsg').innerHTML='<div class="note">בודק את המפתח…</div>';
+  try{const r=JSON.parse(await api('setAiKey',S.pin,k));
+    if(r.ok){S.hasAI=!r.off;$('#aiKey').value='';$('#aiMsg').innerHTML=`<div class="note" style="background:var(--g2)">${r.off?'הקריאה החכמה כובתה.':'✅ המפתח עובד. מעכשיו המחירון ייקרא בקריאה חכמה.'}</div>`}
+    else{S.hasAI=true;$('#aiMsg').innerHTML='<div class="err">המפתח נשמר אבל הבדיקה נכשלה: '+esc(r.error)+'</div>'}drawAi()}
+  catch(e){$('#aiMsg').innerHTML='<div class="err">'+esc(e)+'</div>'}finally{$('#aiSave').disabled=false}};
 async function loadFiles(){$('#filesList').innerHTML='<div class="empty">טוען…</div>';try{const fs=JSON.parse(await api('priceFiles',S.pin));
   $('#filesList').innerHTML=fs.length?fs.map(f=>`<a class="row" href="${esc(f.url)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none"><span class="n"><b>${esc(f.name)}</b><span class="muted">הועלה ${esc(f.at)}${f.week?' · שבוע '+heD(f.week):' · לא נשמר כמחירון'}</span></span><span class="v">פתיחה ↗</span></a>`).join(''):'<div class="empty">עוד לא הועלו קבצים</div>'}catch(e){$('#filesList').innerHTML='<div class="err">'+esc(e)+'</div>'}}
 
@@ -548,6 +576,15 @@ $('#ordCancel').onclick=async()=>{const b=$('#ordCancel');if(b.dataset.c!=='1'){
 
 function render(){if(!S.role)return;if(cur==='orders')renderOrders();else if(cur==='receive')renderReceive();else if(cur==='log')renderLog();else if(cur==='sum')renderSum();
   else if(cur==='prices'){const a=document.activeElement;if(!a||!a.closest('#v-prices input,#v-prices select'))renderPrices()}}
+
+/* ---------- file shared from WhatsApp (Android: Share -> קבלת סחורה) ---------- */
+let sharedTaken=false;
+async function takeShared(){if(sharedTaken||!/[?&]share=1/.test(location.search)||!('caches' in window))return;sharedTaken=true;
+  history.replaceState(null,'',location.pathname);
+  try{const c=await caches.open('kabala-share');const r=await c.match('shared-file');if(!r)return;await c.delete('shared-file');
+    if(S.role!=='manager'){toast('העלאת מחירון מותרת רק עם קוד מנהל');return}
+    const b=await r.blob();const name=decodeURIComponent(r.headers.get('X-Name')||'מחירון');
+    handlePriceFile(new File([b],name,{type:b.type||r.headers.get('Content-Type')||'application/pdf'}))}catch(e){toast('לא הצלחתי לפתוח את הקובץ ששותף')}}
 
 /* ---------- install as app ---------- */
 let deferredInstall=null;

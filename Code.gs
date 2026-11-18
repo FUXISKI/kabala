@@ -74,6 +74,7 @@ function ensure_() {
     const s = settings_();
     if (!s['קוד מנהל מטבח']) sh_(SH.G).appendRow(['קוד מנהל מטבח', String(Math.floor(10000 + Math.random() * 90000))]);
     if (!('שם העסק' in s)) sh_(SH.G).appendRow(['שם העסק', '']);
+    if (!('מפתח Gemini' in s)) sh_(SH.G).appendRow(['מפתח Gemini', '']);
   });
 }
 
@@ -152,7 +153,7 @@ function boot(pin) {
   const sup = cget_('sups') || cput_('sups', rows_(SH.S).filter(r => String(r[0])).map(r => [String(r[0]), String(r[1] || '')]), 600);
   return JSON.stringify({role, today, products: products_(), suppliers: sup.map(r => String(r[0])), phones: Object.fromEntries(sup.map(r => [String(r[0]), String(r[1] || '')])),
     lists: lists_(addDays_(weekOf_(today), -7 * 10)), receipts: month_(today.slice(0, 7)), orders: orders_(addDays_(today, -21)),
-    biz: settings_()['שם העסק'] || '', sheetUrl: role === 'manager' ? SpreadsheetApp.getActive().getUrl() : ''});
+    biz: settings_()['שם העסק'] || '', sheetUrl: role === 'manager' ? SpreadsheetApp.getActive().getUrl() : '', hasAI: role === 'manager' && !!settings_()['מפתח Gemini']});
 }
 function getMonth(pin, m) { role_(pin); return JSON.stringify(month_(m)); }
 function getWeek(pin, w) { role_(pin); return JSON.stringify(lists_(w)[w] || {}); }
@@ -225,10 +226,85 @@ function uploadPriceFile(pin, b64, mime, name) {
   const blob = Utilities.newBlob(Utilities.base64Decode(b64), mime, name);
   const file = folder_('מחירונים').createFile(blob);
   withLock_(() => sh_(SH.F).appendRow([txt_(stamp_()), '', name, file.getUrl(), txt_(file.getId())]));
-  let text = '', ocrErr = '';
-  try { text = ocr_(blob, mime); } catch (e) { ocrErr = String(e.message || e); }
-  const parsed = text ? parse_(text, products_()) : {date: null, prices: {}, extra: [], how: 'none'};
-  return JSON.stringify({fileId: file.getId(), url: file.getUrl(), date: parsed.date, prices: parsed.prices, extra: parsed.extra, how: parsed.how || '', names: parsed.names || 0, count: parsed.count || 0, ocrErr: ocrErr, chars: text.length});
+  const products = products_();
+  // 1) קריאה חכמה (Gemini) – אם הוגדר מפתח
+  let ai = null, aiErr = '';
+  if (settings_()['מפתח Gemini']) { try { ai = aiRead_(b64, mime, products); } catch (e) { aiErr = String(e.message || e).slice(0, 300); } }
+  // 2) זיהוי טקסט רגיל – תמיד, לבדיקה הצלבה
+  let ocr = {date: null, prices: {}, extra: [], how: 'none'}, ocrErr = '';
+  try { const text = ocr_(blob, mime); if (text) ocr = parse_(text, products); } catch (e) { ocrErr = String(e.message || e).slice(0, 300); }
+  // 3) איחוד: Gemini קובע, הזיהוי הרגיל מאמת
+  const prices = {}, flags = {}, conflicts = [];
+  const src = ai ? ai.prices : {};
+  Object.keys(src).forEach(id => { prices[id] = src[id]; flags[id] = ocr.prices[id] == null ? 'ai' : (ocr.prices[id] === src[id] ? 'ok' : 'conflict');
+    if (flags[id] === 'conflict') conflicts.push({id, ai: src[id], ocr: ocr.prices[id]}); });
+  Object.keys(ocr.prices).forEach(id => { if (prices[id] == null) { prices[id] = ocr.prices[id]; flags[id] = 'ocr'; } });
+  const extra = ai ? ai.extra : ocr.extra;
+  const date = (ai && ai.date) || ocr.date;
+  const agreed = Object.keys(flags).filter(id => flags[id] === 'ok').length;
+  const weeklyCount = products.filter(p => p.active && p.type === 'weekly').length;
+  // שמירה אוטומטית רק כששתי השיטות מסכימות על הכל, אין מוצרים חדשים, ויש תאריך
+  const auto = !!ai && conflicts.length === 0 && extra.length === 0 && !!date && agreed >= Math.max(5, Math.round(Object.keys(prices).length * 0.8));
+  let saved = false, fixed = 0, week = '';
+  if (auto) { week = weekOf_(date); fixed = savePriceList(pin, week, JSON.stringify(prices), file.getId()); saved = true; }
+  return JSON.stringify({fileId: file.getId(), url: file.getUrl(), date, prices, extra, flags, conflicts, agreed, total: weeklyCount,
+    how: Object.keys(prices).length ? 'names' : 'none', source: ai ? (ocr.how === 'names' ? 'ai+ocr' : 'ai') : 'ocr',
+    aiErr, ocrErr, saved, week, fixed});
+}
+
+/* ---------- קריאה חכמה עם Gemini ---------- */
+const AI_MODELS = ['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-2.5-flash'];
+function aiCall_(parts, schema) {
+  const key = settings_()['מפתח Gemini']; if (!key) throw new Error('לא הוגדר מפתח Gemini');
+  let last = '';
+  for (const m of AI_MODELS) {
+    const body = {contents: [{role: 'user', parts}], generationConfig: {responseMimeType: 'application/json'}};
+    if (schema) body.generationConfig.responseSchema = schema;
+    const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + m + ':generateContent', {
+      method: 'post', contentType: 'application/json', headers: {'x-goog-api-key': key}, payload: JSON.stringify(body), muteHttpExceptions: true});
+    const code = res.getResponseCode();
+    if (code === 404) { last = m + ': 404'; continue; }
+    if (code >= 300) throw new Error('Gemini ' + code + ' ' + res.getContentText().replace(/\s+/g, ' ').slice(0, 250));
+    const j = JSON.parse(res.getContentText());
+    const txt = ((((j.candidates || [])[0] || {}).content || {}).parts || []).filter(p => p.text && !p.thought).map(p => p.text).join('');
+    if (!txt) throw new Error('Gemini לא החזיר תשובה');
+    return JSON.parse(txt.replace(/^```(json)?|```$/g, '').trim());
+  }
+  throw new Error('לא נמצא מודל Gemini זמין (' + last + ')');
+}
+function aiRead_(b64, mime, products) {
+  const weekly = products.filter(p => p.active && p.type === 'weekly');
+  const names = weekly.map(p => p.name);
+  const prompt = [
+    'This image/PDF is a weekly wholesale fruit & vegetable price list from an Israeli supplier, in Hebrew.',
+    'Read ONLY the main product table (the table with columns "מוצר" and "מחיר"). Ignore any other sections such as',
+    '"ירקות עלים", "ירקות קלופים", oil/sugar boxes, phone numbers, notes and headers.',
+    'For every row of that main table return: "name" exactly as printed, "price" as a number (as printed, e.g. 6.8),',
+    'and "match": the name from OUR PRODUCT LIST below that is the very same product (same variety and packaging), or "" if none.',
+    'Never guess a price. Never invent rows. Also return "date" of the price list as YYYY-MM-DD (a date like 16.11.26 is day.month.year), or "".',
+    'OUR PRODUCT LIST:', names.join('\n')
+  ].join('\n');
+  const schema = {type: 'OBJECT', properties: {date: {type: 'STRING'}, items: {type: 'ARRAY', items: {type: 'OBJECT',
+    properties: {name: {type: 'STRING'}, price: {type: 'NUMBER'}, match: {type: 'STRING'}}, required: ['name', 'price', 'match']}}}, required: ['date', 'items']};
+  const r = aiCall_([{inline_data: {mime_type: mime, data: b64}}, {text: prompt}], schema);
+  const byName = {}; weekly.forEach(p => byName[norm_(p.name)] = p.id);
+  const prices = {}, extra = [];
+  (r.items || []).forEach(it => {
+    const pr = Number(it.price); if (!(pr > 0.3 && pr < 1000)) return;
+    const id = it.match ? byName[norm_(it.match)] : null;
+    if (id) { if (prices[id] == null) prices[id] = Math.round(pr * 100) / 100; }
+    else if (it.name) extra.push({name: norm_(it.name), price: Math.round(pr * 100) / 100});
+  });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(r.date || '') ? r.date : null;
+  return {date, prices, extra: extra.slice(0, 30)};
+}
+/** שמירת מפתח Gemini ובדיקה שהוא עובד */
+function setAiKey(pin, key) {
+  mgr_(pin); key = String(key || '').trim();
+  withLock_(() => setSetting_('מפתח Gemini', key));
+  if (!key) return JSON.stringify({ok: true, off: true});
+  try { aiCall_([{text: 'Reply with the JSON {"ok": true}'}]); return JSON.stringify({ok: true}); }
+  catch (e) { return JSON.stringify({ok: false, error: String(e.message || e).slice(0, 300)}); }
 }
 /** Google Drive OCR: converts the PDF/image to a temporary Google Doc and reads its text. */
 function ocr_(blob, mime) {
@@ -390,7 +466,7 @@ function savePriceList(pin, week, json, fileId) {
 
 /* ---------- API לאפליקציה (מתארחת מחוץ ל-Google) ---------- */
 const API = {boot, getMonth, getWeek, saveReceipt, deleteReceipt, setHandled, uploadPhoto, saveProduct, saveSuppliers,
-  priceFiles, uploadPriceFile, savePriceList, getOrders, saveOrder, setOrderStatus};
+  priceFiles, uploadPriceFile, savePriceList, getOrders, saveOrder, setOrderStatus, setAiKey};
 function doPost(e) {
   let out;
   try {
