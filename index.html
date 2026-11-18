@@ -198,6 +198,9 @@ summary{font-weight:700;padding:10px 0;cursor:pointer;min-height:44px}
   <div class="scroll"><table id="supTbl"></table></div>
   <h2>חריגים ופגומים</h2>
   <div id="excList"></div>
+  <h2>התקבל בלי הזמנה</h2>
+  <div class="muted">סחורה שהתקבלה ולא הייתה בהזמנה – לבדוק מול החשבונית.</div>
+  <div id="noOrdList"></div>
   <h2>שורות בלי מחיר</h2>
   <div id="missList"></div>
   <h2>חוסרים מול הזמנות</h2>
@@ -224,6 +227,7 @@ summary{font-weight:700;padding:10px 0;cursor:pointer;min-height:44px}
   <div class="unit" id="shUnit"></div>
   <label class="f">ספק</label>
   <div class="chips" id="shSup"></div>
+  <div id="shWarn"></div>
   <label class="f" for="shPrice">מחיר ליחידה ₪ <span id="shSrc"></span></label>
   <input class="in" id="shPrice" inputmode="decimal" autocomplete="off">
   <label class="f">מצב הסחורה</label>
@@ -251,7 +255,7 @@ const addDays=(s,n)=>{const d=dt(s);d.setDate(d.getDate()+n);return iso(d)};
 const heD=s=>{const [y,m,d]=String(s).split('-');return d+'/'+m+'/'+String(y).slice(2)};
 const nis=n=>n==null||isNaN(n)?'—':'₪'+Number(n).toLocaleString('he-IL',{minimumFractionDigits:2,maximumFractionDigits:2});
 const num=v=>{v=String(v??'').replace(',','.').trim();if(v==='')return null;const n=Number(v);return isFinite(n)?n:null};
-const STAT=['תקין','פגום','חסר','חריגה בכמות','הוחזר'];
+const STAT=['תקין','פגום','חסר','חריגה בכמות','לא הוזמן','הוחזר'];
 const TYPES={weekly:'שבועי',fixed:'קבוע',manual:'בקבלה'};
 const UNITS=['ק"ג','יחידה','ארגז','צרור','מארז'];
 const SRC={weekly:'מהמחירון השבועי','מחירון':'מהמחירון השבועי',fixed:'מחיר קבוע',manual:'הוזן ידנית',missing:'אין מחיר'};
@@ -384,7 +388,11 @@ function openSheet(o){S.edit=o;const p=S.products[o.pid]||{name:o.name,unit:o.un
   o.sup=o.sup||S.sup||S.sups[0]||'';o.status=o.status||'תקין';
   drawSheetChips();drawPh();$('#shNote').value=o.note||'';$('#shErr').innerHTML='';$('#shDel').style.display=o.id?'':'none';
   $('#sheet').classList.add('on');setTimeout(()=>$('#shQty').focus(),60)}
-function drawSheetChips(){const o=S.edit;
+function linkOrder(o){if(o.id){$('#shWarn').innerHTML='';return}const od=o.sup&&ordFor(o.sup);const it=od&&od.items.find(i=>i.pid===o.pid);
+  if(it){if(o.order!==od.id){o.order=od.id;const rest=Math.max(0,+(it.qty-(od.got[it.pid]||0)).toFixed(3));o.ordQty=rest;o.ordTotal=it.qty}o.notOrdered=false}
+  else{o.order='';o.ordQty=null;o.ordTotal=null;o.notOrdered=true}
+  $('#shWarn').innerHTML=o.notOrdered?`<div class="err" style="margin-top:6px">⚠️ <b>המוצר הזה לא הוזמן</b>${od?' – הוא לא נמצא בהזמנה מ'+esc(o.sup):' – אין הזמנה פתוחה מ'+esc(o.sup||'הספק')}. כדאי לבדוק לפני שמקבלים. אם מקבלים – השורה תסומן "לא הוזמן".</div>`:''}
+function drawSheetChips(){const o=S.edit;linkOrder(o);
   $('#shSup').innerHTML=S.sups.map(s=>`<button class="chip ${s===o.sup?'on':''}" data-ss="${esc(s)}">${esc(s)}</button>`).join('');
   $('#shStat').innerHTML=STAT.map(s=>`<button class="chip ${s!=='תקין'?'bad':''} ${s===o.status?'on':''}" data-st="${s}">${s}</button>`).join('')}
 function drawPh(){const o=S.edit;$('#shPh').innerHTML=o.photos.map((u,k)=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img alt="תמונה ${k+1}" src="${esc(o.local[u]||thumb(u))}"></a>`).join('')+(o.upl?`<span class="muted">מעלה ${o.upl} תמונות…</span>`:'')}
@@ -406,13 +414,14 @@ $('#shSave').onclick=async()=>{const o=S.edit;if(!o)return;const qty=num($('#shQ
   if(o.auto.src==='manual'&&price==null)return err('למוצר הזה צריך להזין מחיר');
   if(!o.sup)return err('נא לבחור ספק');
   let devNote='';if(!o.id&&o.order&&o.ordQty>0&&o.status==='תקין'&&Math.abs(qty-o.ordQty)/o.ordQty>0.10){o.status='חריגה בכמות';devNote=`הוזמן ${+o.ordQty}, התקבל ${+qty}`}
+  if(!o.id&&o.notOrdered){devNote='לא הוזמן';if(o.status==='תקין')o.status='לא הוזמן'}
   const p=S.products[o.pid]||{};let src=o.auto.src;if(price!=null&&price!==o.auto.price)src='manual';if(price==null)src=o.auto.src==='manual'?'manual':'missing';
   const rec={id:o.id||'',ds:o.ds,t:o.t||'',pid:o.pid,name:p.name||o.name,unit:p.unit||o.unit||'',qty,price,src,total:price!=null?Math.round(qty*price*100)/100:null,sup:o.sup,status:o.status,note:[$('#shNote').value.trim(),devNote].filter(Boolean).join(' · '),photos:o.photos,by:o.by||S.who||'',order:o.order||''};
   const isNew=!rec.id;if(isNew){rec.id='r'+uid();rec.t=nowHM()}
   upsert({...rec,_p:true,_new:isNew});
   if(rec.order){const od=S.orders.find(x=>x.id===rec.order);if(od){od.got=od.got||{};const d=qty-(o.id?(o.qty||0):0);od.got[rec.pid]=(od.got[rec.pid]||0)+d}}
   enqueue('saveReceipt',[S.pin,JSON.stringify(rec)]);
-  if(isNew){S.sup=o.sup;ls.set('sup',o.sup)}closeSheet();toast(devNote?'נשמר ✓ – סומן "חריגה בכמות" ('+devNote+')':'נשמר ✓');S.q='';$('#q').value='';render();persist()};
+  if(isNew){S.sup=o.sup;ls.set('sup',o.sup)}closeSheet();toast(devNote==='לא הוזמן'?'נשמר ✓ – סומן "לא הוזמן"':devNote?'נשמר ✓ – סומן "חריגה בכמות" ('+devNote+')':'נשמר ✓');S.q='';$('#q').value='';render();persist()};
 $('#shDel').onclick=async()=>{const o=S.edit;if(!o||!o.id)return;const b=$('#shDel');if(b.dataset.c!=='1'){b.dataset.c='1';b.textContent='ללחוץ שוב למחיקה';return}
   b.dataset.c='';b.textContent='מחק שורה';
   if(o.order){const od=S.orders.find(x=>x.id===o.order);if(od&&od.got)od.got[o.pid]=Math.max(0,(od.got[o.pid]||0)-(o.qty||0))}
@@ -445,6 +454,8 @@ function renderSum(){const it=S.months[S.sumMonth];if(!it){$('#kpis').innerHTML=
   const g={};for(const i of it){const s=g[i.sup||'—']=g[i.sup||'—']||{n:0,t:0,x:0,m:0};s.n++;s.t+=i.total||0;if(i.status&&i.status!=='תקין')s.x++;if(i.price==null)s.m++}
   $('#supTbl').innerHTML='<tr><th>ספק</th><th class="num">שורות</th><th class="num">סה"כ ₪</th><th class="num">חריגים</th><th class="num">בלי מחיר</th></tr>'+(Object.entries(g).sort((a,b)=>b[1].t-a[1].t).map(([s,v])=>`<tr><td>${esc(s)}</td><td class="num">${v.n}</td><td class="num"><b>${nis(v.t)}</b></td><td class="num">${v.x||''}</td><td class="num">${v.m||''}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">אין קבלות בחודש הזה</td></tr>');
   $('#excList').innerHTML=exc.length?'<div class="list">'+exc.map(i=>`<div class="row"><span class="n"><b>${esc(i.name)} <span class="tag r">${esc(i.status)}</span></b><span class="muted">${heD(i.ds)} · ${esc(i.sup)} · ${+(+i.qty).toFixed(2)} ${esc(i.unit)}${i.note?' · '+esc(i.note):''}${i.by?' · קלט: '+esc(i.by):''}</span>${i.photos&&i.photos.length?'<span class="thumbs">'+i.photos.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener"><img alt="תמונה" style="height:70px" src="${esc(thumb(u))}"></a>`).join('')+'</span>':''}</span><label class="chip ${i.handled?'on':''}" style="display:flex;align-items:center;gap:6px"><input type="checkbox" data-h="${esc(i.id)}" data-d="${esc(i.ds)}" ${i.handled?'checked':''}> טופל</label></div>`).join('')+'</div>':'<div class="empty">אין חריגים החודש</div>';
+  const no=it.filter(i=>i.status==='לא הוזמן'||/(^|· )לא הוזמן( ·|$)/.test(i.note||''));const ng={};for(const i of no){ng[i.sup||'—']=(ng[i.sup||'—']||0)+(i.total||0)}
+  $('#noOrdList').innerHTML=no.length?'<div class="note">'+Object.entries(ng).map(([s,t])=>`${esc(s)}: <b>${nis(t)}</b>`).join(' · ')+'</div><div class="list">'+no.map(rowHtml).join('')+'</div>':'<div class="empty">כל מה שהתקבל היה בהזמנה</div>';
   $('#missList').innerHTML=miss.length?'<div class="note">המחירים יושלמו אוטומטית כשישמר מחירון לאותו שבוע, או בלחיצה על השורה.</div><div class="list">'+miss.map(rowHtml).join('')+'</div>':'<div class="empty">לכל השורות יש מחיר</div>';
   const mo=S.monthOrders[S.sumMonth];if(!mo){$('#shortList').innerHTML='<div class="empty">טוען…</div>';return}
   const sh=[];for(const o of mo)if(o.status!=='בוטלה'&&o.status!=='טיוטה')for(const i of o.items){const g=o.got[i.pid]||0;if(g<i.qty-1e-9)sh.push({o,i,g})}
