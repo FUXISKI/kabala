@@ -309,34 +309,58 @@ function parse_(text, products) {
     flushU(); return out;
   };
   const prices = {}, extra = [];
-  let buf = [], nums = [], adj = false, segs = 0;
+  let buf = [], nums = [], adj = false, segs = 0, pend = null;
+  const kn = arr => arr.filter(i => i.p).length;
+  const okMix = arr => arr.length > 0 && kn(arr) > 0 && arr.length - kn(arr) <= 3;   // בעיקר מוצרים מוכרים, עד 3 חדשים
+  const commit = (items, vals) => {
+    items.forEach((it, i) => { if (it.p) prices[it.p.id] = vals[i]; else if (it.name) extra.push({name: it.name, price: vals[i]}); });
+    adj = true; segs++;
+  };
+  const dropLead = arr => { const x = arr.slice(); while (x.length && !x[0].p && x.some(i => i.p)) x.shift(); return x; };
+  // הטבלה יכולה להגיע בכמה חלקים: שמות, מחירים, עוד שמות, עוד מחירים. אוספים עד שהמספרים מתאזנים.
+  const endPend = () => {
+    if (!pend) return;
+    if (buf.length && okMix(buf)) { pend.items = pend.items.concat(buf); buf = []; }
+    if (pend.items.length === pend.vals.length) commit(pend.items, pend.vals); else adj = false;
+    pend = null;
+  };
   const pair = () => {
-    let items = buf.slice();
-    while (items.length > nums.length && !items[0].p) items.shift();
-    const known = items.filter(i => i.p).length;
-    if (nums.length && items.length === nums.length && (known > 0 || adj)) {
-      items.forEach((it, i) => { if (it.p) prices[it.p.id] = nums[i]; else if (it.name) extra.push({name: it.name, price: nums[i]}); });
-      adj = true; segs++;
+    if (pend) {
+      if (!buf.length || okMix(buf)) { pend.items = pend.items.concat(buf); pend.vals = pend.vals.concat(nums); buf = []; nums = [];
+        if (pend.items.length === pend.vals.length) { commit(pend.items, pend.vals); pend = null; }
+        else if (Math.abs(pend.items.length - pend.vals.length) > 40) { pend = null; adj = false; }
+        return; }
+      endPend();
+    }
+    const items = dropLead(buf);
+    if (okMix(items)) {
+      if (items.length === nums.length) commit(items, nums); else pend = {items, vals: nums};
+    } else if (items.length && kn(items) === 0 && adj) {
+      let it = items;   // מוצרים חדשים צמודים לטבלה; אם חסרים פריטים, אולי שתי מילים הן שני מוצרים
+      if (it.length !== nums.length) { const split = []; it.forEach(x => x.name.split(' ').forEach(w => split.push({name: w}))); if (split.length === nums.length) it = split; }
+      if (it.length === nums.length) commit(it, nums); else adj = false;
     } else adj = false;
     buf = []; nums = [];
   };
   for (const L of lines) {
     if (NUM_LINE.test(L)) { nums.push(Number(L.match(NUM_LINE)[1].replace(',', '.'))); continue; }
-    if (!L.replace(/[₪\s.,:;|_\-–]/g, '')) continue;          // שורות ריקות או "₪" בלבד
+    if (!L.replace(/[₪\s.,:;|_\-–]/g, '')) continue;
     if (nums.length) pair();
     if (HEADER_LINE.test(L)) continue;
-    if (DATE_IN.test(L) || !/[֐-׿]/.test(L)) { buf = []; adj = false; continue; }
+    if (DATE_IN.test(L) || !/[֐-׿]/.test(L)) { endPend(); buf = []; adj = false; continue; }
     const items = segment(L), last = items[items.length - 1];
     if (last && last.num != null && items.length >= 2 && items.slice(0, -1).every(i => i.num == null)) {
+      endPend();
       const it = items[items.length - 2]; buf = [];
       if (it.p) { prices[it.p.id] = last.num; adj = true; segs++; }
-      else if (adj && it.name) extra.push({name: it.name, price: last.num});
+      else if (adj && it.name && items.length === 2) extra.push({name: it.name, price: last.num});
       continue;
     }
-    if (items.some(i => i.num != null)) { buf = []; adj = false; continue; }
+    if (items.some(i => i.num != null)) { endPend(); buf = []; adj = false; continue; }
     buf.push.apply(buf, items);
   }
   if (nums.length) pair();
+  endPend();
   const seen = {}; const ex = extra.filter(x => !seen[x.name] && (seen[x.name] = 1)).slice(0, 30);
   return {date, prices, extra: ex, how: segs ? 'names' : 'none'};
 }
