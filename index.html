@@ -377,7 +377,7 @@ function rowHtml(i){const tags=[];if(i._p)tags.push('<span class="tag a" title="
 /* ---------- sheet ---------- */
 function openSheet(o){S.edit=o;const p=S.products[o.pid]||{name:o.name,unit:o.unit};
   $('#shName').textContent=p.name;$('#shSub').textContent=o.id?('עריכה · '+heD(o.ds)):heD(o.ds);
-  $('#shQty').value=o.qty??'';$('#shUnit').textContent=p.unit||'';
+  $('#shQty').value=o.qty??'';$('#shUnit').textContent=(p.unit||'')+(o.ordQty!=null&&!o.id?` · הוזמן ${+o.ordTotal}${o.ordQty!==o.ordTotal?` (נשאר לקבל ${+o.ordQty})`:''}${p.unit==='ק"ג'?' – להקליד את המשקל מהמאזניים':''}`:'');
   const pr=o.id?{price:o.price,src:o.src}:priceFor(o.pid,o.ds);o.auto=pr;o.photos=[...(o.photos||[])];o.local={};
   $('#shPrice').value=pr.price??'';
   $('#shSrc').innerHTML=pr.src==='manual'&&pr.price==null?'<span class="tag a">חובה למלא</span>':pr.src==='missing'?'<span class="tag r">אין מחיר השבוע – אפשר להשאיר ריק</span>':`<span class="tag g">${SRC[pr.src]||''}</span>`;
@@ -405,19 +405,21 @@ $('#shSave').onclick=async()=>{const o=S.edit;if(!o)return;const qty=num($('#shQ
   if(qty==null||qty<=0)return err('נא להזין כמות');
   if(o.auto.src==='manual'&&price==null)return err('למוצר הזה צריך להזין מחיר');
   if(!o.sup)return err('נא לבחור ספק');
+  let devNote='';if(!o.id&&o.order&&o.ordQty>0&&o.status==='תקין'&&Math.abs(qty-o.ordQty)/o.ordQty>0.10){o.status='חריגה בכמות';devNote=`הוזמן ${+o.ordQty}, התקבל ${+qty}`}
   const p=S.products[o.pid]||{};let src=o.auto.src;if(price!=null&&price!==o.auto.price)src='manual';if(price==null)src=o.auto.src==='manual'?'manual':'missing';
-  const rec={id:o.id||'',ds:o.ds,t:o.t||'',pid:o.pid,name:p.name||o.name,unit:p.unit||o.unit||'',qty,price,src,total:price!=null?Math.round(qty*price*100)/100:null,sup:o.sup,status:o.status,note:$('#shNote').value.trim(),photos:o.photos,by:o.by||S.who||'',order:o.order||''};
+  const rec={id:o.id||'',ds:o.ds,t:o.t||'',pid:o.pid,name:p.name||o.name,unit:p.unit||o.unit||'',qty,price,src,total:price!=null?Math.round(qty*price*100)/100:null,sup:o.sup,status:o.status,note:[$('#shNote').value.trim(),devNote].filter(Boolean).join(' · '),photos:o.photos,by:o.by||S.who||'',order:o.order||''};
   const isNew=!rec.id;if(isNew){rec.id='r'+uid();rec.t=nowHM()}
   upsert({...rec,_p:true,_new:isNew});
   if(rec.order){const od=S.orders.find(x=>x.id===rec.order);if(od){od.got=od.got||{};const d=qty-(o.id?(o.qty||0):0);od.got[rec.pid]=(od.got[rec.pid]||0)+d}}
   enqueue('saveReceipt',[S.pin,JSON.stringify(rec)]);
-  if(isNew){S.sup=o.sup;ls.set('sup',o.sup)}closeSheet();toast('נשמר ✓');S.q='';$('#q').value='';render();persist()};
+  if(isNew){S.sup=o.sup;ls.set('sup',o.sup)}closeSheet();toast(devNote?'נשמר ✓ – סומן "חריגה בכמות" ('+devNote+')':'נשמר ✓');S.q='';$('#q').value='';render();persist()};
 $('#shDel').onclick=async()=>{const o=S.edit;if(!o||!o.id)return;const b=$('#shDel');if(b.dataset.c!=='1'){b.dataset.c='1';b.textContent='ללחוץ שוב למחיקה';return}
   b.dataset.c='';b.textContent='מחק שורה';
   if(o.order){const od=S.orders.find(x=>x.id===o.order);if(od&&od.got)od.got[o.pid]=Math.max(0,(od.got[o.pid]||0)-(o.qty||0))}
   upsert({id:o.id,ds:o.ds,del:true});enqueue('deleteReceipt',[S.pin,o.id]);closeSheet();toast('נמחק');render();persist()};
 $('#grid').onclick=e=>{const b=e.target.closest('[data-p]');if(!b)return;const od=S.sup&&ordFor(S.sup);const it=od&&od.items.find(i=>i.pid===b.dataset.p);
-  const rest=it?Math.max(0,+(it.qty-(od.got[it.pid]||0)).toFixed(3)):null;openSheet({pid:b.dataset.p,ds:S.today,order:it?od.id:'',qty:rest||null})};
+  const rest=it?Math.max(0,+(it.qty-(od.got[it.pid]||0)).toFixed(3)):null;const kg=(S.products[b.dataset.p]||{}).unit==='ק"ג';
+  openSheet({pid:b.dataset.p,ds:S.today,order:it?od.id:'',qty:kg?null:(rest||null),ordQty:it?rest:null,ordTotal:it?it.qty:null})};
 $('#openOrd').onclick=e=>{const b=e.target.closest('[data-oo]');if(!b)return;const o=S.orders.find(x=>x.id===b.dataset.oo);if(o){S.sup=o.sup;ls.set('sup',o.sup);renderReceive();$('#grid').scrollIntoView({behavior:'smooth'})}};
 $('#supChips').onclick=e=>{const b=e.target.closest('[data-s]');if(b){S.sup=b.dataset.s;ls.set('sup',S.sup);renderReceive()}};
 $('#q').oninput=e=>{S.q=e.target.value;renderReceive()};
