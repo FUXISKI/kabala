@@ -257,65 +257,80 @@ function lev_(a, b) {
 }
 /** מפתח השוואה: אותיות סופיות לרגילות, בלי ו' ו-י' (ה-OCR מתבלבל בהן ובגרשיים) */
 function key_(w) { return w.replace(/ן/g, 'נ').replace(/ם/g, 'מ').replace(/ץ/g, 'צ').replace(/ך/g, 'כ').replace(/ף/g, 'פ').replace(/[וי]/g, ''); }
-function wordEq_(a, b) {
+function wordEq_(a, b, multi) {
   if (a === b) return true;
   if (/\d/.test(a) || /\d/.test(b)) return a.replace(/\.$/, '') === b.replace(/\.$/, '');
   const x = key_(a), y = key_(b), L = Math.max(x.length, y.length);
   if (x === y) return L > 0;
-  return lev_(x, y) <= (L >= 6 ? 2 : L >= 4 ? 1 : 0);
+  // מוצר של מילה אחת: קפדני יותר, כדי ש"פומלו" לא ייקרא "מלון"
+  const tol = multi ? (L >= 6 ? 2 : L >= 3 ? 1 : 0) : (L >= 6 ? 1 : 0);
+  return lev_(x, y) <= tol;
 }
 const NUM_LINE = /^₪?\s*(\d{1,3}(?:[.,]\d{1,2})?)\s*₪?$/;
+const HEADER_LINE = /^(מוצר|מוצרים|שם מוצר|פריט|מחיר|מחיר ליחידה)$/;
+const DATE_IN = /\d{1,2}[.\/]\d{1,2}[.\/]\d{2,4}/;
 /**
- * קורא מחירון שבו טבלת המוצרים הראשית בנויה משתי עמודות: שמות ומחירים.
- * ה-OCR של גוגל מחזיר קודם את כל השמות ואחר כך את כל המחירים, ולכן:
- * 1. מוצאים את הרצף הארוך ביותר של שורות שהן רק מספר (עמודת המחירים).
- * 2. מפרקים את השורות שלפניו לשמות מוצרים, לפי רשימת המוצרים במערכת.
- * 3. אם מספר השמות שווה למספר המחירים – מצמידים לפי הסדר.
- * טבלאות אחרות במחירון (עלים, קלופים, שמן) לא נקראות.
+ * קורא את טבלת המוצרים הראשית במחירון.
+ * ה-OCR של גוגל מחזיר את הטבלה בקטעים: רצף של שמות ואחריו רצף של מחירים באותו סדר,
+ * ולפעמים שורה של "שם + מחיר". מצמידים כל קטע שמות לקטע המחירים שאחריו, רק כשהמספרים תואמים.
+ * קטעים בלי אף מוצר מוכר (עלים, קלופים, שמן) נדחים, אלא אם הם צמודים לטבלה הראשית (מוצרים חדשים).
  */
 function parse_(text, products) {
   const lines = text.split(/\n/).map(norm_).filter(String);
   let date = null;
   const dm = norm_(text).match(/(\d{1,2})[.\/](\d{1,2})[.\/](\d{2,4})/);
   if (dm) { const y = dm[3].length === 2 ? '20' + dm[3] : dm[3]; date = y + '-' + ('0' + dm[2]).slice(-2) + '-' + ('0' + dm[1]).slice(-2); }
-  // 1. longest run of number-only lines
-  let best = [0, 0];
-  for (let i = 0; i < lines.length;) {
-    if (!NUM_LINE.test(lines[i])) { i++; continue; }
-    let j = i; while (j < lines.length && NUM_LINE.test(lines[j])) j++;
-    if (j - i > best[1] - best[0]) best = [i, j];
-    i = j;
-  }
-  const nums = lines.slice(best[0], best[1]).map(l => Number(l.match(NUM_LINE)[1].replace(',', '.')));
   const weekly = products.filter(p => p.active && p.type === 'weekly');
-  if (nums.length < 3) return {date, prices: {}, extra: [], how: 'none'};
-  // 2. the names block: lines before the numbers, back to a header line ("מוצר")
-  let s = best[0] - 1; const block = [];
-  while (s >= 0 && !NUM_LINE.test(lines[s]) && !/^(מוצר|מוצרים|שם מוצר|פריט)$/.test(lines[s]) && !/\d{1,2}[.\/]\d{1,2}[.\/]\d{2,4}/.test(lines[s])) { block.unshift(lines[s]); s--; }
-  const cands = weekly.map(p => ({p, w: words_(p.name)})).sort((a, b) => b.w.length - a.w.length);
-  const items = [];
-  for (const line of block) {
-    const w = words_(line); let k = 0, unk = [];
-    const flush = () => { if (unk.length) { items.push({name: unk.join(' ')}); unk = []; } };
+  const cands = weekly.map(p => ({p, w: words_(p.name)}));
+  const isNum = w => /^\d{1,3}(?:\.\d{1,2})?$/.test(w);
+  const segment = line => {
+    const w = words_(line).filter(x => x !== '₪'); const out = []; let k = 0, unk = [];
+    const flushU = () => { if (unk.length) { out.push({name: unk.join(' ')}); unk = []; } };
     while (k < w.length) {
       let hit = null, hd = 1e9;
       for (const c of cands) {
         if (c.w.length > w.length - k || (hit && c.w.length < hit.w.length)) continue;
-        if (!c.w.every((x, t) => wordEq_(x, w[k + t]))) continue;
+        if (!c.w.every((x, t) => wordEq_(x, w[k + t], c.w.length > 1))) continue;
         const d = c.w.reduce((a, x, t) => a + lev_(key_(x), key_(w[k + t])), 0);
         if (!hit || c.w.length > hit.w.length || d < hd) { hit = c; hd = d; }
       }
-      if (hit) { flush(); items.push({p: hit.p}); k += hit.w.length; } else { unk.push(w[k]); k++; }
+      if (hit) { flushU(); out.push({p: hit.p}); k += hit.w.length; }
+      else if (isNum(w[k])) { flushU(); out.push({num: Number(w[k])}); k++; }
+      else { unk.push(w[k]); k++; }
     }
-    flush();
-  }
+    flushU(); return out;
+  };
   const prices = {}, extra = [];
-  if (items.length === nums.length) {
-    items.forEach((it, i) => { if (it.p) prices[it.p.id] = nums[i]; else extra.push({name: it.name, price: nums[i]}); });
-    return {date, prices, extra, how: 'names'};
+  let buf = [], nums = [], adj = false, segs = 0;
+  const pair = () => {
+    let items = buf.slice();
+    while (items.length > nums.length && !items[0].p) items.shift();
+    const known = items.filter(i => i.p).length;
+    if (nums.length && items.length === nums.length && (known > 0 || adj)) {
+      items.forEach((it, i) => { if (it.p) prices[it.p.id] = nums[i]; else if (it.name) extra.push({name: it.name, price: nums[i]}); });
+      adj = true; segs++;
+    } else adj = false;
+    buf = []; nums = [];
+  };
+  for (const L of lines) {
+    if (NUM_LINE.test(L)) { nums.push(Number(L.match(NUM_LINE)[1].replace(',', '.'))); continue; }
+    if (!L.replace(/[₪\s.,:;|_\-–]/g, '')) continue;          // שורות ריקות או "₪" בלבד
+    if (nums.length) pair();
+    if (HEADER_LINE.test(L)) continue;
+    if (DATE_IN.test(L) || !/[֐-׿]/.test(L)) { buf = []; adj = false; continue; }
+    const items = segment(L), last = items[items.length - 1];
+    if (last && last.num != null && items.length >= 2 && items.slice(0, -1).every(i => i.num == null)) {
+      const it = items[items.length - 2]; buf = [];
+      if (it.p) { prices[it.p.id] = last.num; adj = true; segs++; }
+      else if (adj && it.name) extra.push({name: it.name, price: last.num});
+      continue;
+    }
+    if (items.some(i => i.num != null)) { buf = []; adj = false; continue; }
+    buf.push.apply(buf, items);
   }
-  if (weekly.length === nums.length) { weekly.forEach((p, i) => prices[p.id] = nums[i]); return {date, prices, extra, how: 'order'}; }
-  return {date, prices, extra, how: 'mismatch', names: items.length, count: nums.length};
+  if (nums.length) pair();
+  const seen = {}; const ex = extra.filter(x => !seen[x.name] && (seen[x.name] = 1)).slice(0, 30);
+  return {date, prices, extra: ex, how: segs ? 'names' : 'none'};
 }
 function savePriceList(pin, week, json, fileId) {
   mgr_(pin); const prices = JSON.parse(json); const pmap = {}; products_().forEach(p => pmap[p.id] = p);
