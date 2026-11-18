@@ -232,17 +232,25 @@ function uploadPriceFile(pin, b64, mime, name) {
 }
 /** Google Drive OCR: converts the PDF/image to a temporary Google Doc and reads its text. */
 function ocr_(blob, mime) {
-  const boundary = 'b' + Date.now();
-  const meta = JSON.stringify({name: 'ocr-temp-' + Date.now(), mimeType: 'application/vnd.google-apps.document'});
-  const head = Utilities.newBlob('--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + meta + '\r\n--' + boundary + '\r\nContent-Type: ' + mime + '\r\n\r\n').getBytes();
-  const tail = Utilities.newBlob('\r\n--' + boundary + '--').getBytes();
-  const res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&ocrLanguage=he&fields=id', {
-    method: 'post', contentType: 'multipart/related; boundary=' + boundary, payload: head.concat(blob.getBytes()).concat(tail),
-    headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken()}, muteHttpExceptions: true});
-  if (res.getResponseCode() >= 300) throw new Error('OCR ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 200));
-  const id = JSON.parse(res.getContentText()).id;
-  try { return DocumentApp.openById(id).getBody().getText(); }
-  finally { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) {} }
+  // שתי דרכים להמרה עם זיהוי טקסט; אם הראשונה נכשלת מנסים את השנייה
+  const tries = [
+    {url: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', meta: {name: 'ocr-temp-' + Date.now(), mimeType: 'application/vnd.google-apps.document'}},
+    {url: 'https://www.googleapis.com/upload/drive/v2/files?uploadType=multipart&convert=true&ocr=true', meta: {title: 'ocr-temp-' + Date.now(), mimeType: mime}}
+  ];
+  let lastErr = '';
+  for (const t of tries) {
+    const boundary = 'b' + Date.now();
+    const head = Utilities.newBlob('--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(t.meta) + '\r\n--' + boundary + '\r\nContent-Type: ' + mime + '\r\n\r\n').getBytes();
+    const tail = Utilities.newBlob('\r\n--' + boundary + '--').getBytes();
+    const res = UrlFetchApp.fetch(t.url, {method: 'post', contentType: 'multipart/related; boundary=' + boundary, payload: head.concat(blob.getBytes()).concat(tail),
+      headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken()}, muteHttpExceptions: true});
+    if (res.getResponseCode() >= 300) { lastErr = 'OCR ' + res.getResponseCode() + ' ' + res.getContentText().replace(/\s+/g, ' ').slice(0, 300); continue; }
+    const id = JSON.parse(res.getContentText()).id;
+    try { return DocumentApp.openById(id).getBody().getText(); }
+    catch (e) { lastErr = String(e.message || e); }
+    finally { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) {} }
+  }
+  throw new Error(lastErr || 'OCR נכשל');
 }
 function norm_(s) {
   return String(s).replace(/[״“”]/g, '"').replace(/[׳’`]/g, "'").replace(/[‎‏‪-‮﻿]/g, '').replace(/\s+/g, ' ').trim();
