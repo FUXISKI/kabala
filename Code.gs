@@ -86,10 +86,18 @@ function tstr_(v, f) { return v instanceof Date ? Utilities.formatDate(v, tz_(),
 function txt_(v) { return v === '' || v == null ? '' : "'" + String(v); }
 function sh_(n) { return SpreadsheetApp.getActive().getSheetByName(n); }
 function rows_(n) { const v = sh_(n).getDataRange().getValues(); v.shift(); return v; }
-function settings_() { const o = {}; rows_(SH.G).forEach(r => o[String(r[0])] = String(r[1]).trim()); return o; }
+/* ---------- מטמון בזיכרון של גוגל, כדי לא לקרוא את הגיליון בכל בקשה ---------- */
+function cget_(k) { try { const v = CacheService.getScriptCache().get(k); return v ? JSON.parse(v) : null; } catch (e) { return null; } }
+function cput_(k, v, sec) { try { const s = JSON.stringify(v); if (s.length < 90000) CacheService.getScriptCache().put(k, s, sec || 300); } catch (e) {} return v; }
+function cdel_() { try { CacheService.getScriptCache().removeAll(Array.prototype.slice.call(arguments)); } catch (e) {} }
+function settings_() {
+  const c = cget_('settings'); if (c) return c;
+  const o = {}; rows_(SH.G).forEach(r => o[String(r[0])] = String(r[1]).trim()); return cput_('settings', o, 120);
+}
 function setSetting_(k, v) {
   const sh = sh_(SH.G), c = sh.getRange('A:A').createTextFinder(k).matchEntireCell(true).findNext();
   if (c) sh.getRange(c.getRow(), 2).setValue(v); else sh.appendRow([k, v]);
+  cdel_('settings');
 }
 function role_(pin) {
   const s = settings_(); pin = String(pin || '').trim();
@@ -115,14 +123,15 @@ function folder_(sub) {
 }
 
 function products_() {
-  return rows_(SH.P).filter(r => r[0] !== '').map(r => ({
+  const c = cget_('products'); if (c) return c;
+  return cput_('products', rows_(SH.P).filter(r => r[0] !== '').map(r => ({
     id: String(r[0]), name: String(r[1]), unit: String(r[2]), type: TYPE_IN[r[3]] || 'weekly',
-    fixed: r[4] === '' || r[4] === null ? null : Number(r[4]), active: String(r[5]) !== 'לא'}));
+    fixed: r[4] === '' || r[4] === null ? null : Number(r[4]), active: String(r[5]) !== 'לא'})), 600);
 }
 function lists_(fromWeek) {
-  const o = {};
-  rows_(SH.L).forEach(r => { const w = dstr_(r[0]); if (fromWeek && w < fromWeek) return; (o[w] = o[w] || {})[String(r[1])] = Number(r[3]); });
-  return o;
+  let all = cget_('lists');
+  if (!all) { all = {}; rows_(SH.L).forEach(r => { const w = dstr_(r[0]); (all[w] = all[w] || {})[String(r[1])] = Number(r[3]); }); cput_('lists', all, 600); }
+  const o = {}; Object.keys(all).forEach(w => { if (!fromWeek || w >= fromWeek) o[w] = all[w]; }); return o;
 }
 function rec_(r) {
   return {id: String(r[0]), ds: dstr_(r[1]), t: tstr_(r[2]), pid: String(r[3]), name: String(r[4]), unit: String(r[5]), qty: Number(r[6]),
@@ -140,7 +149,7 @@ function month_(m) { return rows_(SH.R).map(rec_).filter(r => r.ds.slice(0, 7) =
 function boot(pin) {
   const role = role_(pin);
   const today = Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd');
-  const sup = rows_(SH.S).filter(r => String(r[0]));
+  const sup = cget_('sups') || cput_('sups', rows_(SH.S).filter(r => String(r[0])).map(r => [String(r[0]), String(r[1] || '')]), 600);
   return JSON.stringify({role, today, products: products_(), suppliers: sup.map(r => String(r[0])), phones: Object.fromEntries(sup.map(r => [String(r[0]), String(r[1] || '')])),
     lists: lists_(addDays_(weekOf_(today), -7 * 10)), receipts: month_(today.slice(0, 7)), orders: orders_(addDays_(today, -21)),
     biz: settings_()['שם העסק'] || '', sheetUrl: role === 'manager' ? SpreadsheetApp.getActive().getUrl() : ''});
@@ -153,14 +162,15 @@ function saveReceipt(pin, json) {
   if (!o.pid || !(o.qty > 0)) throw new Error('חסרים נתונים');
   return withLock_(() => {
     const sh = sh_(SH.R);
-    if (o.id) {
-      const r = findRow_(o.id); if (!r) throw new Error('השורה לא נמצאה');
+    const r = o.id ? findRow_(o.id) : 0;
+    if (r) {
       const old = rec_(sh.getRange(r, 1, 1, R_HEAD.length).getValues()[0]);
-      o.handled = old.handled; o.t = old.t; o.ds = old.ds;
+      o.handled = old.handled; o.t = old.t; o.ds = old.ds; if (old.del) o.del = true;
       sh.getRange(r, 1, 1, R_HEAD.length).setValues([row_(o)]);
     } else {
-      o.id = 'r' + Utilities.getUuid().slice(0, 8);
-      o.ds = Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd'); o.t = Utilities.formatDate(new Date(), tz_(), 'HH:mm');
+      o.id = o.id || ('r' + Utilities.getUuid().slice(0, 8));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(o.ds || '')) o.ds = Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd');
+      if (!/^\d{1,2}:\d{2}$/.test(o.t || '')) o.t = Utilities.formatDate(new Date(), tz_(), 'HH:mm');
       sh.appendRow(row_(o));
     }
     if (o.order) orderStatus_(o.order);
@@ -191,6 +201,7 @@ function saveProduct(pin, json) {
     const vals = [txt_(p.id || ('p' + Utilities.getUuid().slice(0, 6))), p.name, p.unit || 'ק"ג', TYPE_OUT[p.type] || 'שבועי', p.fixed == null ? '' : p.fixed, p.active === false ? 'לא' : 'כן'];
     const c = p.id ? sh.getRange('A:A').createTextFinder(p.id).matchEntireCell(true).findNext() : null;
     if (c) sh.getRange(c.getRow(), 1, 1, 6).setValues([vals]); else sh.appendRow(vals);
+    cdel_('products');
     return JSON.stringify(products_());
   });
 }
@@ -199,6 +210,7 @@ function saveSuppliers(pin, json) {
   return withLock_(() => {
     const sh = sh_(SH.S); if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, 2).clearContent();
     if (list.length) sh.getRange(2, 1, list.length, 2).setValues(list.map(x => typeof x === 'string' ? [x, ''] : [x.name, x.phone || '']));
+    cdel_('sups');
     return true;
   });
 }
@@ -314,6 +326,7 @@ function savePriceList(pin, week, json, fileId) {
     const all = keep.concat(add);
     if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, 5).clearContent();
     if (all.length) sh.getRange(2, 1, all.length, 5).setValues(all);
+    cdel_('lists');
     if (fileId) { const c = sh_(SH.F).getRange('E:E').createTextFinder(fileId).matchEntireCell(true).findNext(); if (c) sh_(SH.F).getRange(c.getRow(), 2).setValue(txt_(week)); }
     const rs = sh_(SH.R), data = rs.getDataRange().getValues(), end = addDays_(week, 6); let fixed = 0;
     for (let i = 1; i < data.length; i++) {
@@ -337,7 +350,7 @@ function doPost(e) {
     const req = JSON.parse(e.postData.contents);
     const f = Object.prototype.hasOwnProperty.call(API, req.fn) ? API[req.fn] : null;
     if (!f) throw new Error('פעולה לא מוכרת');
-    setup_(); ensure_();
+    if (!cget_('ready')) { setup_(); ensure_(); cput_('ready', 1, 21600); }
     out = {ok: true, data: f.apply(null, req.args || [])};
   } catch (err) { out = {ok: false, error: String(err && err.message || err)}; }
   return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
@@ -374,7 +387,7 @@ function saveOrder(pin, json) {
     if (c) { const old = ordRec_(sh.getRange(c.getRow(), 1, 1, O_HEAD.length).getValues()[0]); o.at = old.at; o.by = old.by || o.by;
       if (O_OPEN.indexOf(o.status) < 0 && o.status !== 'בוטלה') o.status = old.status;
       sh.getRange(c.getRow(), 1, 1, O_HEAD.length).setValues([ordRow_(o)]); }
-    else { o.id = 'o' + Utilities.getUuid().slice(0, 7); o.at = stamp_(); o.status = o.status || 'טיוטה'; sh.appendRow(ordRow_(o)); }
+    else { o.id = o.id || ('o' + Utilities.getUuid().slice(0, 7)); o.at = stamp_(); o.status = o.status || 'טיוטה'; sh.appendRow(ordRow_(o)); }
     orderStatus_(o.id);
     return JSON.stringify(orders_('', '').find(x => x.id === o.id) || o);
   });
@@ -391,4 +404,18 @@ function orderStatus_(oid) {
   const any = Object.keys(g).length > 0, all = o.items.every(i => (g[i.pid] || 0) >= i.qty - 1e-9);
   const st = any ? (all ? 'התקבלה' : 'התקבלה חלקית') : (o.status === 'טיוטה' ? 'טיוטה' : 'נשלחה');
   if (st !== o.status) sh.getRange(c.getRow(), 5).setValue(st);
+}
+
+/* ---------- שמירה על השרת "ער" בשעות העבודה ---------- */
+function חימום() {
+  const h = Number(Utilities.formatDate(new Date(), tz_(), 'H'));
+  if (h < 5 || h > 22) return;
+  settings_(); products_();
+}
+/** להרצה ידנית פעם אחת מהעורך: מפעיל חימום אוטומטי כל 5 דקות */
+function הפעלת_מהירות() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'חימום').forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('חימום').timeBased().everyMinutes(5).create();
+  cdel_('settings', 'products', 'lists', 'sups', 'ready');
+  Logger.log('הופעל: השרת יישאר ער בין 05:00 ל-23:00');
 }

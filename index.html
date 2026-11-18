@@ -101,7 +101,7 @@ summary{font-weight:700;padding:10px 0;cursor:pointer;min-height:44px}
 </style>
 </head>
 <body>
-<header><img src="icon-192.png" alt="" width="34" height="34" style="border-radius:9px;flex:none"><h1>קבלת סחורה</h1><span class="d" id="hdate"></span><button class="chip" id="logout" style="min-height:34px;padding:4px 12px;background:transparent;color:#fff;border-color:rgba(255,255,255,.5);display:none">יציאה</button></header>
+<header><img src="icon-192.png" alt="" width="34" height="34" style="border-radius:9px;flex:none"><h1>קבלת סחורה</h1><span class="d" id="hdate"></span><span id="sync" class="tag a" style="display:none"></span><button class="chip" id="logout" style="min-height:34px;padding:4px 12px;background:transparent;color:#fff;border-color:rgba(255,255,255,.5);display:none">יציאה</button></header>
 <main>
 <div id="status"></div>
 
@@ -279,27 +279,63 @@ $('#nav').onclick=e=>{const a=e.target.closest('a');if(a){e.preventDefault();sho
 
 /* ---------- login ---------- */
 $('#pin').value=S.pin;$('#who').value=S.who;
+const NET1='אין חיבור לשרת',NET2='השרת לא ענה';
+const isNet=e=>typeof e==='string'&&(e.startsWith(NET1)||e.startsWith(NET2));
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const nowHM=()=>{const d=new Date();return pad(d.getHours())+':'+pad(d.getMinutes())};
+function applyBoot(d,fromCache){S.role=d.role;S.today=fromCache?iso(new Date()):d.today;S.sheetUrl=d.sheetUrl;setProducts(d.products);S.sups=d.suppliers;S.lists=d.lists;
+  S.months={...(fromCache?{}:S.months),[d.today.slice(0,7)]:d.receipts};S.orders=d.orders||[];S.phones=d.phones||{};S.biz=d.biz||'';applyPending();
+  if(!S.sumMonth){S.sumMonth=S.logMonth=S.today.slice(0,7);S.wk=weekOf(S.today);$('#logMonth').value=$('#sumMonth').value=S.sumMonth;$('#wk').value=S.wk}
+  $('#sheetLink').href=S.sheetUrl||'#';if(S.sup&&!S.sups.includes(S.sup))S.sup='';
+  document.querySelectorAll('nav .mg').forEach(a=>a.style.display=S.role==='manager'?'':'none');document.querySelectorAll('nav .ch').forEach(a=>a.style.display=canOrder()?'':'none');
+  $('#nav').style.gridTemplateColumns='repeat('+(S.role==='manager'?5:S.role==='chef'?3:2)+',1fr)';
+  $('#nav').style.display='';$('#logout').style.display='';
+  $('#hdate').textContent=dt(S.today).toLocaleDateString('he-IL',{weekday:'long',day:'numeric',month:'numeric'})}
+let persistT;function persist(){clearTimeout(persistT);persistT=setTimeout(()=>{if(!S.role)return;const m=S.today.slice(0,7);
+  ls.set('boot',JSON.stringify({pin:S.pin,d:{role:S.role,today:S.today,sheetUrl:S.sheetUrl,products:Object.values(S.products),suppliers:S.sups,phones:S.phones,biz:S.biz,lists:S.lists,orders:S.orders.map(o=>{const {_p,...x}=o;return x}),receipts:(S.months[m]||[]).filter(i=>!i._p)}}))},400)}
 async function login(silent){const pin=$('#pin').value.trim(),who=$('#who').value.trim();
   if(!pin){if(!silent)$('#loginErr').innerHTML='<div class="err">נא להקליד קוד</div>';return}
-  $('#loginBtn').disabled=true;$('#loginBtn').textContent='מתחבר…';$('#loginErr').innerHTML='';status(silent?'<div class="note">טוען…</div>':'');
+  let cached=null;try{const c=JSON.parse(ls.get('boot')||'null');if(c&&c.pin===pin)cached=c.d}catch(e){}
+  if(cached&&!S.role){S.pin=pin;applyBoot(cached,true);show(S.role==='chef'?'orders':'receive');flush()}
+  if(!cached){$('#loginBtn').disabled=true;$('#loginBtn').textContent='מתחבר…';$('#loginErr').innerHTML='';status(silent?'<div class="note">טוען…</div>':'')}
   try{const d=JSON.parse(await api('boot',pin));S.pin=pin;S.who=who||S.who;ls.set('pin',pin);ls.set('who',S.who);
-    S.role=d.role;S.today=d.today;S.sheetUrl=d.sheetUrl;setProducts(d.products);S.sups=d.suppliers;S.lists=d.lists;S.months={[d.today.slice(0,7)]:d.receipts};S.orders=d.orders||[];S.phones=d.phones||{};S.biz=d.biz||'';
-    S.sumMonth=S.logMonth=d.today.slice(0,7);S.wk=weekOf(d.today);$('#logMonth').value=$('#sumMonth').value=S.sumMonth;$('#wk').value=S.wk;$('#sheetLink').href=S.sheetUrl||'#';
-    if(S.sup&&!S.sups.includes(S.sup))S.sup='';
-    document.querySelectorAll('nav .mg').forEach(a=>a.style.display=S.role==='manager'?'':'none');document.querySelectorAll('nav .ch').forEach(a=>a.style.display=canOrder()?'':'none');
-    $('#nav').style.gridTemplateColumns='repeat('+(S.role==='manager'?5:S.role==='chef'?3:2)+',1fr)';
-    $('#nav').style.display='';$('#logout').style.display='';status('');
-    $('#hdate').textContent=dt(S.today).toLocaleDateString('he-IL',{weekday:'long',day:'numeric',month:'numeric'});show(S.role==='chef'?'orders':'receive')}
-  catch(e){status('');show('login');$('#loginErr').innerHTML='<div class="err">'+esc(e)+'</div>'}finally{$('#loginBtn').disabled=false;$('#loginBtn').textContent='כניסה'}}
+    const first=!S.role;applyBoot(d,false);persist();status('');if(first)show(S.role==='chef'?'orders':'receive');else render();flush()}
+  catch(e){if(isNet(e)&&S.role){status('');return}
+    S.role=null;ls.del('boot');$('#nav').style.display='none';$('#logout').style.display='none';status('');show('login');$('#loginErr').innerHTML='<div class="err">'+esc(e)+'</div>'}finally{$('#loginBtn').disabled=false;$('#loginBtn').textContent='כניסה'}}
 $('#loginBtn').onclick=()=>login(false);$('#pin').onkeydown=e=>{if(e.key==='Enter')login(false)};
-$('#logout').onclick=()=>{ls.del('pin');S.pin='';S.role=null;$('#pin').value='';$('#nav').style.display='none';$('#logout').style.display='none';show('login')};
+$('#logout').onclick=()=>{ls.del('pin');ls.del('boot');S.pin='';S.role=null;S.sumMonth=null;$('#pin').value='';$('#nav').style.display='none';$('#logout').style.display='none';show('login')};
 function setProducts(arr){S.products={};for(const p of arr)S.products[p.id]=p}
 
 /* ---------- data ---------- */
-async function loadMonth(m,force){if(!m||(!force&&S.months[m]))return;try{S.months[m]=JSON.parse(await api('getMonth',S.pin,m));render()}catch(e){status('<div class="err">'+esc(e)+'</div>')}}
+async function loadMonth(m,force){if(!m||(!force&&S.months[m]))return;try{S.months[m]=JSON.parse(await api('getMonth',S.pin,m));applyPending();persist();render()}catch(e){if(!isNet(e))status('<div class="err">'+esc(e)+'</div>')}}
 setInterval(()=>{if(S.role&&document.visibilityState==='visible'&&!S.edit){const ms=new Set([S.today.slice(0,7)]);if(cur==='log')ms.add(S.logMonth);if(cur==='sum')ms.add(S.sumMonth);ms.forEach(m=>loadMonth(m,true));if(cur==='orders'&&!S.ord||cur==='receive')loadOrders()}},60000);
-async function loadOrders(){try{const d=JSON.parse(await api('boot',S.pin));S.orders=d.orders||[];S.products=Object.fromEntries((d.products||[]).map(p=>[p.id,p]));S.lists=d.lists;S.months[d.today.slice(0,7)]=d.receipts;render()}catch(e){}}
+async function loadOrders(){if(outbox.length)return;try{const d=JSON.parse(await api('boot',S.pin));if(outbox.length)return;applyBoot(d,false);persist();render()}catch(e){}}
 async function loadMonthOrders(m){try{S.monthOrders[m]=JSON.parse(await api('getOrders',S.pin,m));render()}catch(e){}}
+/* ---------- outbox: save locally first, send in the background ---------- */
+let outbox=[];try{outbox=JSON.parse(ls.get('outbox')||'[]')}catch(e){outbox=[]}
+let flushing=false,flushT=null,lastErr='';
+function obSave(){ls.set('outbox',JSON.stringify(outbox));drawSync()}
+function enqueue(fn,args){outbox.push({k:uid(),fn,args,tries:0});obSave();flush()}
+function drawSync(){const el=$('#sync');if(!el)return;const n=outbox.length;
+  el.textContent=n?('⏳ '+n):'';el.title=n?('ממתינות '+n+' שמירות לשרת'+(lastErr?' – '+lastErr:'')):'';el.style.display=n?'':'none'}
+async function flush(){if(flushing||!outbox.length||!S.pin)return;flushing=true;clearTimeout(flushT);
+  try{while(outbox.length){const it=outbox[0];
+      try{const res=await api(it.fn,...it.args);outbox.shift();lastErr='';obSave();synced(it,res)}
+      catch(e){if(isNet(e)){it.tries++;lastErr='אין חיבור';obSave();break}
+        outbox.shift();obSave();toast('לא נשמר בשרת: '+e);failed(it)}}}
+  finally{flushing=false;if(outbox.length)flushT=setTimeout(flush,Math.min(30000,2000*Math.max(1,outbox[0].tries)));render();persist()}}
+addEventListener('online',flush);setInterval(flush,20000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){flush();if(S.role)loadOrders()}});
+function synced(it,res){if(it.fn==='saveReceipt'){const r=JSON.parse(res);if(!outbox.some(x=>x.fn==='saveReceipt'&&JSON.parse(x.args[1]).id===r.id))upsert(r)}
+  else if(it.fn==='saveOrder'){const r=JSON.parse(res);const k=S.orders.findIndex(x=>x.id===r.id);if(k>=0)S.orders[k]={...r,got:{...(S.orders[k].got||{}),...(r.got||{})}};else S.orders.unshift(r)}}
+function failed(it){if(it.fn==='saveReceipt'){const r=JSON.parse(it.args[1]);const a=S.months[r.ds.slice(0,7)]||[];const x=a.find(i=>i.id===r.id);if(x&&x._new)upsert({...r,del:true})}}
+/** after data comes from the server, re-apply what is still waiting in the outbox */
+function applyPending(){for(const it of outbox){
+  if(it.fn==='saveReceipt'){const r=JSON.parse(it.args[1]);const m=r.ds.slice(0,7);const a=S.months[m]=S.months[m]||[];const i=a.findIndex(x=>x.id===r.id);const v={...r,_p:true};if(i>=0)a[i]={...a[i],...v};else a.unshift(v)}
+  else if(it.fn==='deleteReceipt'){for(const a of Object.values(S.months)){const i=a.findIndex(x=>x.id===it.args[1]);if(i>=0)a.splice(i,1)}}
+  else if(it.fn==='setHandled'){for(const a of Object.values(S.months)){const x=a.find(y=>y.id===it.args[1]);if(x)x.handled=it.args[2]}}
+  else if(it.fn==='saveOrder'){const o=JSON.parse(it.args[1]);const k=S.orders.findIndex(x=>x.id===o.id);const v={...(k>=0?S.orders[k]:{got:{}}),...o,_p:true};if(k>=0)S.orders[k]=v;else S.orders.unshift(v)}
+  else if(it.fn==='setOrderStatus'){const x=S.orders.find(y=>y.id===it.args[1]);if(x)x.status=it.args[2]}}}
 function upsert(rec){const m=rec.ds.slice(0,7);const a=S.months[m]=S.months[m]||[];const i=a.findIndex(x=>x.id===rec.id);
   if(rec.del){if(i>=0)a.splice(i,1)}else if(i>=0)a[i]=rec;else a.unshift(rec)}
 function priceFor(pid,ds){const p=S.products[pid];if(!p)return{price:null,src:'missing'};
@@ -330,7 +366,7 @@ function renderReceive(){
     +(qq&&!ps.length?`<div class="empty">לא נמצא "${esc(qq)}"</div>`:'');
   $('#todayList').innerHTML=items.length?items.map(rowHtml).join(''):'<div class="empty">עוד לא נקלטה סחורה היום. בוחרים ספק ולוחצים על מוצר.</div>';
   const sum=items.reduce((a,i)=>a+(i.total||0),0);$('#todayTot').innerHTML=items.length?`<span>${items.length} שורות</span><span>${nis(sum)}</span>`:''}
-function rowHtml(i){const tags=[];if(i.status&&i.status!=='תקין')tags.push(`<span class="tag r">${esc(i.status)}</span>`);if(i.price==null)tags.push('<span class="tag a">חסר מחיר</span>');if(i.photos&&i.photos.length)tags.push(`<span class="tag g">📷 ${i.photos.length}</span>`);
+function rowHtml(i){const tags=[];if(i._p)tags.push('<span class="tag a" title="נשמר בטלפון, נשלח לשרת ברקע">⏳</span>');if(i.status&&i.status!=='תקין')tags.push(`<span class="tag r">${esc(i.status)}</span>`);if(i.price==null)tags.push('<span class="tag a">חסר מחיר</span>');if(i.photos&&i.photos.length)tags.push(`<span class="tag g">📷 ${i.photos.length}</span>`);
   return `<button class="row" data-e="${esc(i.id)}" data-d="${esc(i.ds)}"><span class="n"><b>${esc(i.name)} ${tags.join(' ')}</b><span class="muted">${esc(i.sup||'')} · ${esc(i.t||'')}${i.by?' · '+esc(i.by):''}${i.note?' · '+esc(i.note):''}</span></span><span class="v">${+(+i.qty).toFixed(2)} ${esc(i.unit||'')}<br><b>${nis(i.total)}</b></span></button>`}
 
 /* ---------- sheet ---------- */
@@ -366,11 +402,15 @@ $('#shSave').onclick=async()=>{const o=S.edit;if(!o)return;const qty=num($('#shQ
   if(!o.sup)return err('נא לבחור ספק');
   const p=S.products[o.pid]||{};let src=o.auto.src;if(price!=null&&price!==o.auto.price)src='manual';if(price==null)src=o.auto.src==='manual'?'manual':'missing';
   const rec={id:o.id||'',ds:o.ds,t:o.t||'',pid:o.pid,name:p.name||o.name,unit:p.unit||o.unit||'',qty,price,src,total:price!=null?Math.round(qty*price*100)/100:null,sup:o.sup,status:o.status,note:$('#shNote').value.trim(),photos:o.photos,by:o.by||S.who||'',order:o.order||''};
-  $('#shSave').disabled=true;$('#shSave').textContent='שומר…';
-  try{const saved=JSON.parse(await api('saveReceipt',S.pin,JSON.stringify(rec)));upsert(saved);if(saved.order){const od=S.orders.find(x=>x.id===saved.order);if(od){const d=saved.qty-(o.id?(o.qty||0):0);od.got[saved.pid]=(od.got[saved.pid]||0)+d}loadOrders()}if(!o.id){S.sup=o.sup;ls.set('sup',o.sup)}closeSheet();toast('נשמר ✓');S.q='';$('#q').value='';render()}
-  catch(e){err('השמירה נכשלה: '+esc(e)+'. נסו שוב.')}finally{$('#shSave').disabled=false;$('#shSave').textContent='שמור'}};
+  const isNew=!rec.id;if(isNew){rec.id='r'+uid();rec.t=nowHM()}
+  upsert({...rec,_p:true,_new:isNew});
+  if(rec.order){const od=S.orders.find(x=>x.id===rec.order);if(od){od.got=od.got||{};const d=qty-(o.id?(o.qty||0):0);od.got[rec.pid]=(od.got[rec.pid]||0)+d}}
+  enqueue('saveReceipt',[S.pin,JSON.stringify(rec)]);
+  if(isNew){S.sup=o.sup;ls.set('sup',o.sup)}closeSheet();toast('נשמר ✓');S.q='';$('#q').value='';render();persist()};
 $('#shDel').onclick=async()=>{const o=S.edit;if(!o||!o.id)return;const b=$('#shDel');if(b.dataset.c!=='1'){b.dataset.c='1';b.textContent='ללחוץ שוב למחיקה';return}
-  b.dataset.c='';b.textContent='מחק שורה';try{await api('deleteReceipt',S.pin,o.id);upsert({id:o.id,ds:o.ds,del:true});closeSheet();toast('נמחק');render()}catch(e){toast('המחיקה נכשלה')}};
+  b.dataset.c='';b.textContent='מחק שורה';
+  if(o.order){const od=S.orders.find(x=>x.id===o.order);if(od&&od.got)od.got[o.pid]=Math.max(0,(od.got[o.pid]||0)-(o.qty||0))}
+  upsert({id:o.id,ds:o.ds,del:true});enqueue('deleteReceipt',[S.pin,o.id]);closeSheet();toast('נמחק');render();persist()};
 $('#grid').onclick=e=>{const b=e.target.closest('[data-p]');if(!b)return;const od=S.sup&&ordFor(S.sup);const it=od&&od.items.find(i=>i.pid===b.dataset.p);
   const rest=it?Math.max(0,+(it.qty-(od.got[it.pid]||0)).toFixed(3)):null;openSheet({pid:b.dataset.p,ds:S.today,order:it?od.id:'',qty:rest||null})};
 $('#openOrd').onclick=e=>{const b=e.target.closest('[data-oo]');if(!b)return;const o=S.orders.find(x=>x.id===b.dataset.oo);if(o){S.sup=o.sup;ls.set('sup',o.sup);renderReceive();$('#grid').scrollIntoView({behavior:'smooth'})}};
@@ -402,7 +442,7 @@ function renderSum(){const it=S.months[S.sumMonth];if(!it){$('#kpis').innerHTML=
   const mo=S.monthOrders[S.sumMonth];if(!mo){$('#shortList').innerHTML='<div class="empty">טוען…</div>';return}
   const sh=[];for(const o of mo)if(o.status!=='בוטלה'&&o.status!=='טיוטה')for(const i of o.items){const g=o.got[i.pid]||0;if(g<i.qty-1e-9)sh.push({o,i,g})}
   $('#shortList').innerHTML=sh.length?'<div class="list">'+sh.map(({o,i,g})=>`<div class="row"><span class="n"><b>${esc(i.name)}</b><span class="muted">${esc(o.sup)} · אספקה ${heD(o.ds)}</span></span><span class="v">הוזמן ${+i.qty} · התקבל ${+g.toFixed(2)}<br><b style="color:var(--red)">חסר ${+(i.qty-g).toFixed(2)} ${esc(i.unit)}</b></span></div>`).join('')+'</div>':'<div class="empty">אין חוסרים מול הזמנות</div>'}
-$('#excList').onchange=async e=>{const c=e.target.closest('[data-h]');if(!c)return;try{await api('setHandled',S.pin,c.dataset.h,c.checked);const it=(S.months[c.dataset.d.slice(0,7)]||[]).find(i=>i.id===c.dataset.h);if(it)it.handled=c.checked;render()}catch(er){toast('לא נשמר');c.checked=!c.checked}};
+$('#excList').onchange=e=>{const c=e.target.closest('[data-h]');if(!c)return;const it=(S.months[c.dataset.d.slice(0,7)]||[]).find(i=>i.id===c.dataset.h);if(it)it.handled=c.checked;enqueue('setHandled',[S.pin,c.dataset.h,c.checked]);render()};
 
 /* ---------- prices ---------- */
 async function ensureWeek(w){if(!S.lists[w]){try{const x=JSON.parse(await api('getWeek',S.pin,w));if(Object.keys(x).length)S.lists[w]=x}catch(er){}}}
@@ -494,19 +534,17 @@ $('#ordCopy').onclick=()=>{const o=S.ord;const prev=S.orders.filter(x=>x.sup===o
   o.q={};for(const i of prev.items)o.q[i.pid]=i.qty;S.ordOnly=true;renderOrdEd();toast('מולא מההזמנה של '+heD(prev.ds)+' – אפשר לשנות')};
 function waText(o,items){const lines=[(S.biz?S.biz+' – ':'')+'הזמנה לאספקה ב'+dayName(o.ds),''];for(const i of items)lines.push('• '+i.name+' – '+(+i.qty)+' '+i.unit);if(o.note)lines.push('','הערה: '+o.note);lines.push('','תודה!');return lines.join('\n')}
 function waPhone(p){let d=String(p||'').replace(/\D/g,'');if(d.startsWith('0'))d='972'+d.slice(1);return d}
-async function saveOrd(send){const o=S.ord;const items=ordItems();const err=m=>{$('#ordErr').innerHTML=`<div class="err">${m}</div>`};$('#ordErr').innerHTML='';
+function saveOrd(send){const o=S.ord;const items=ordItems();const err=m=>{$('#ordErr').innerHTML=`<div class="err">${m}</div>`};$('#ordErr').innerHTML='';
   if(!o.sup)return err('נא לבחור ספק');if(!items.length)return err('ההזמנה ריקה');
-  let win=null;if(send){try{win=window.open('','_blank')}catch(e){}}
-  $('#ordSave').disabled=$('#ordSend').disabled=true;
-  try{const st=send?(o.status==='טיוטה'?'נשלחה':o.status):o.status;const saved=JSON.parse(await api('saveOrder',S.pin,JSON.stringify({id:o.id,sup:o.sup,ds:o.ds,note:o.note,status:st,items,by:S.who})));
-    const k=S.orders.findIndex(x=>x.id===saved.id);if(k>=0)S.orders[k]=saved;else S.orders.unshift(saved);
-    if(send){const url='https://wa.me/'+waPhone(S.phones[o.sup])+'?text='+encodeURIComponent(waText(o,items));if(win)win.location.href=url;else{const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener';document.body.append(a);a.click();a.remove()}}
-    else if(win)win.close();
-    toast(send?'ההזמנה נשמרה – בוואטסאפ לוחצים "שלח"':'נשמר');S.ord=null;renderOrders()}
-  catch(e){if(win)win.close();err('השמירה נכשלה: '+esc(e))}finally{$('#ordSave').disabled=$('#ordSend').disabled=false}}
+  const st=send?(o.status==='טיוטה'?'נשלחה':o.status):o.status;const id=o.id||('o'+uid());
+  const rec={id,sup:o.sup,ds:o.ds,note:o.note,status:st,items,by:S.who};
+  if(send){const url='https://wa.me/'+waPhone(S.phones[o.sup])+'?text='+encodeURIComponent(waText(o,items));const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener';document.body.append(a);a.click();a.remove()}
+  const k=S.orders.findIndex(x=>x.id===id);const v={...(k>=0?S.orders[k]:{got:{},at:''}),...rec,_p:true};if(k>=0)S.orders[k]=v;else S.orders.unshift(v);
+  enqueue('saveOrder',[S.pin,JSON.stringify(rec)]);
+  toast(send?'ההזמנה נשמרה – בוואטסאפ לוחצים "שלח"':'נשמר');S.ord=null;renderOrders();persist()}
 $('#ordSave').onclick=()=>saveOrd(false);$('#ordSend').onclick=()=>saveOrd(true);
 $('#ordCancel').onclick=async()=>{const b=$('#ordCancel');if(b.dataset.c!=='1'){b.dataset.c='1';b.textContent='ללחוץ שוב לביטול ההזמנה';return}b.dataset.c='';b.textContent='ביטול הזמנה';
-  try{await api('setOrderStatus',S.pin,S.ord.id,'בוטלה');const x=S.orders.find(y=>y.id===S.ord.id);if(x)x.status='בוטלה';S.ord=null;toast('ההזמנה בוטלה');renderOrders()}catch(e){toast('לא בוטלה')}};
+  const x=S.orders.find(y=>y.id===S.ord.id);if(x)x.status='בוטלה';enqueue('setOrderStatus',[S.pin,S.ord.id,'בוטלה']);S.ord=null;toast('ההזמנה בוטלה');renderOrders();persist()};
 
 function render(){if(!S.role)return;if(cur==='orders')renderOrders();else if(cur==='receive')renderReceive();else if(cur==='log')renderLog();else if(cur==='sum')renderSum();
   else if(cur==='prices'){const a=document.activeElement;if(!a||!a.closest('#v-prices input,#v-prices select'))renderPrices()}}
@@ -525,7 +563,7 @@ drawInstall();
 if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 
 /* ---------- start ---------- */
-show('login');if(S.pin)login(true);
+show('login');drawSync();if(S.pin)login(true);
 }
 </script>
 </body>
